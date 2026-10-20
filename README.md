@@ -2,7 +2,7 @@
 
 [![release](https://img.shields.io/github/v/release/Xposed-Modules-Repo/io.github.dunxuan.douyinnocrop)](https://github.com/Xposed-Modules-Repo/io.github.dunxuan.douyinnocrop/releases)
 [![module](https://img.shields.io/badge/LSPosed-模块仓库-blue)](https://modules.lsposed.org/module/io.github.dunxuan.douyinnocrop)
-[![api](https://img.shields.io/badge/Xposed%20API-102-green)](https://libxposed.com/)
+[![api](https://img.shields.io/badge/Xposed%20API-102-green)](https://github.com/libxposed/api)
 
 一个 LSPosed 模块:让抖音视频按**原始宽高比完整显示**,不再被左右裁剪。
 
@@ -15,14 +15,9 @@ original aspect ratio — no more left/right cropping.
 - **安装包 Releases**(Xposed-Modules-Repo 镜像):<https://github.com/Xposed-Modules-Repo/io.github.dunxuan.douyinnocrop/releases>
 - **源码**:<https://github.com/dunxuan/io.github.dunxuan.douyinnocrop>
 
-## 版本状态 / Status
+## 版本 / Version
 
-| 版本 | versionCode | 分支 | 状态 | 说明 |
-|---|---|---|---|---|
-| **v1.1.0** | 8 | `master` | ✅ 稳定版,已发布(2026-09-28) | 适配范围严格限定全屏界面;评论区五重门控 |
-| 1.1.5 | 13 | `video-fit` | 🔧 开发中 | 极简视频适配管线(四钩子),`getAweme` 绑定即收缩 |
-
-v1.1.0 相对 v1.0 的要点:
+当前版本 **v1.1.0**(versionCode 8,2026-09-28 发布)。相对 v1.0 的要点:
 
 - 适配范围严格限定三处全屏界面:推荐主 Feed、搜索打开的视频详情播放器、清屏全屏
 - 评论区五重门控(视图树 / Activity / params Fragment / 可见评论 Fragment 子树 / 全屏级独立窗口),评论动图与图片完全保持抖音原生行为
@@ -32,7 +27,7 @@ v1.1.0 相对 v1.0 的要点:
 
 ## 效果对比
 
-![修改前 cover 填满裁左右 · 修改后 内接适配零裁剪](assets/before-after.svg)
+![修改前 cover 填满裁左右 · 修改后 内接适配零裁剪](https://raw.githubusercontent.com/dunxuan/io.github.dunxuan.douyinnocrop/master/assets/before-after.svg)
 
 *左:抖音原生 cover 放大填满 → 视频比屏幕宽时左右被裁;右:本模块把渲染 View 收成视频宽高比的内接矩形 → 完整显示,多余部分留背景。*
 
@@ -101,8 +96,8 @@ Hook 锚点均为未混淆的接口方法与 public 字段(在抖音 40.6.0 上�
 | `KeepSurfaceTextureView#onAttachedToWindow()` | attach 时序补偿(TextureView 路径) |
 | `CleanModeViewModel#sA(...)` | 清屏状态进出,驱动全量重算/还原 |
 
-抖音大版本更新后如失效,可用 [droidasc](https://github.com/) 等 dex 分析工具重新验证上述
-锚点,只需更新 `NoCropModule.java` 中的类名/方法名常量。
+抖音大版本更新后如失效,可用 droidasc 等 dex 分析工具重新验证上述锚点,
+只需更新 `NoCropModule.java` 中的类名/方法名常量。
 
 ## License
 
