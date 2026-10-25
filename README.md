@@ -17,7 +17,16 @@ original aspect ratio — no more left/right cropping.
 
 ## 版本 / Version
 
-当前版本 **v1.1.0**(versionCode 8,2026-09-28 发布)。相对 v1.0 的要点:
+当前版本 **v1.2.0**(versionCode 14,2026-10-25 发布)。在 v1.1.0 基础上的要点:
+
+- **静态作用域**:模块作用域锁死为 `scope.list` 里的抖音,LSPosed 中不能勾选其他应用
+- **热重载**:模块更新后可把新代码热重载进正在运行的抖音进程,免强停重启;
+  换代时交出适配状态(仅宿主对象与基本类型),新代用 `replaceHook` 原子接管全部钩子
+- **反优化**:全部锚点调用 `deoptimize()`,防 JIT 内联绕过钩子
+- **进程摘除**:WebView 沙箱等无关进程用 `detach()` 直接摘掉
+- `module.prop` 显式声明 `exceptionMode=protective`
+
+v1.1.0(versionCode 8,2026-09-28 发布)相对 v1.0 的要点:
 
 - 适配范围严格限定三处全屏界面:推荐主 Feed、搜索打开的视频详情播放器、清屏全屏
 - 评论区五重门控(视图树 / Activity / params Fragment / 可见评论 Fragment 子树 / 全屏级独立窗口),评论动图与图片完全保持抖音原生行为
@@ -58,17 +67,41 @@ so the surface ratio equals the video ratio and nothing gets cropped.
   不碰播放器内核
 - 全部 Hook 使用 `PROTECTIVE` 异常模式:钩子出错自动降级,不会导致抖音闪退
 
+## 现代 API 特性 / Modern API features
+
+模块完全基于 **libxposed API 102**,不含任何旧版 API(`de.robv.android.xposed` /
+`XposedHelpers` / `assets/xposed_init` / `xposedscope` meta-data 一概不用):
+
+| 特性 | 配置 | 说明 |
+|---|---|---|
+| **静态作用域** | `module.prop: staticScope=true` | 作用域锁死为 `scope.list` 里的抖音,用户在 LSPosed 中**不能**勾选其他应用,杜绝误注入 |
+| **热重载** | `module.prop: autoHotReload=true` + `onHotReloading`/`onHotReloaded` | 更新 APK 后把新代码热重载进正在运行的抖音进程,免强停重启;换代时交出适配状态(只含宿主 View 与基本类型,不含模块类),新代用 `replaceHook` **原子接管**四条钩子,新旧钩子之间不留空档 |
+| **反优化** | `deoptimize()` | 四个锚点逐一反优化,防止 JIT 把小方法内联进调用点后绕过钩子 |
+| **进程摘除** | `detach()` | WebView 沙箱等无关进程直接摘掉模块,不再收后续生命周期回调 |
+| **异常模式** | `exceptionMode=protective` | 与代码里每条 hook 的 `setExceptionMode(PROTECTIVE)` 一致 |
+| **钩子 id** | `setId()` | 四条钩子各有稳定 id,同 id 再安装即原子替换 |
+
+作用域列表只有抖音一个包名(`scope.list`),见下节"要求"。
+
+补充说明:
+
+- **热重载**依赖框架实现 API 102 热重载;框架不支持或拒绝时无副作用,
+  模块更新照常在下次强停重启抖音后生效
+- **未接入** libxposed `service`(状态页 / Remote Preferences / 动态申请作用域):
+  模块没有自己的界面,也没有需要跨进程同步的配置;静态作用域下动态申请作用域同样无意义
+
 ## 要求 / Requirements
 
 - **LSPosed**(支持 Modern Xposed API 102 的版本)
-- **作用域**:`com.ss.android.ugc.aweme`(抖音,安装后在 LSPosed 中勾选)
+- **作用域**:`com.ss.android.ugc.aweme`(抖音)。本模块为**静态作用域**
+  (`staticScope=true`),LSPosed 里该模块的作用域固定为抖音,不可添加其他应用
 - Android 9+ (minSdk 28)
 
 ## 安装 / Install
 
 1. 从 [Releases](https://github.com/Xposed-Modules-Repo/io.github.dunxuan.douyinnocrop/releases) 下载最新 APK 并安装
 2. LSPosed → 模块 → 启用 **抖音不裁剪**
-3. 作用域勾选 **抖音**
+3. 作用域已固定为 **抖音**(静态作用域,无需也不能更改)
 4. 强行停止并重启抖音
 
 验证日志:`adb logcat -s DouYinNoCrop:D`

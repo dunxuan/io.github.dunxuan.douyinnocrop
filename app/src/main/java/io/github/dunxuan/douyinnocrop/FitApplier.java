@@ -12,9 +12,13 @@ import android.widget.ImageView;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
+import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.WeakHashMap;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 
 /**
  * 全屏内容适配器——"只处理全屏界面"的落地点。
@@ -124,6 +128,13 @@ final class FitApplier {
      * 不镜像命令（命令存在守卫分支，镜像会漂移）。任一 VM 活跃即视为清屏中。
      */
     private static final Map<Object, Boolean> CLEAN_VMS = new WeakHashMap<>();
+
+    /**
+     * 热重载退役标志（API 102）：本代把状态交出去之后置 true，
+     * 此后本代所有适配入口（布局监听 / apply / fit / undo）一律不再写布局，
+     * 防止旧代码与接管的新代打架。
+     */
+    private static volatile boolean retired = false;
 
     private FitApplier() {
     }
@@ -363,6 +374,9 @@ final class FitApplier {
 
     /** 主线程上的适配主流程（视频与图文共用：记状态 + 挂监听 + 执行适配）。 */
     private static void applyMain(View video, FitState state) {
+        if (retired) {
+            return; // 本代已因热重载退役，不再写布局
+        }
         // View 复用到新内容：旧的真实尺寸作废（新内容播放会重新回调）
         String realAid = REAL_AID.get(video);
         if (realAid != null && state.aid != null && !realAid.equals(state.aid)) {
@@ -385,6 +399,9 @@ final class FitApplier {
 
     /** 门控 + 适配。容器必须非空。 */
     private static void fit(View video, View container, FitState state) {
+        if (retired) {
+            return; // 本代已因热重载退役
+        }
         int cw = container.getWidth();
         int ch = container.getHeight();
         if (cw <= 0 || ch <= 0) {
@@ -844,6 +861,9 @@ final class FitApplier {
 
     /** 撤销该 View 上本模块的全部适配（LayoutParams 与 scaleType 各自幂等还原）。 */
     private static void undo(View video) {
+        if (retired) {
+            return; // 热重载退役：状态已交出，还原交给新代
+        }
         restoreLayoutParams(video);
         restoreScale(video);
     }
@@ -874,6 +894,10 @@ final class FitApplier {
             @Override
             public void onLayoutChange(View v, int l, int t, int r, int b,
                                        int oldLeft, int oldTop, int oldRight, int oldBottom) {
+                if (retired) {
+                    v.removeOnLayoutChangeListener(this); // 热重载退役：自己摘掉自己
+                    return;
+                }
                 View target = ref.get();
                 if (target == null || target.getParent() != v) {
                     v.removeOnLayoutChangeListener(this);
@@ -953,5 +977,187 @@ final class FitApplier {
             scaleReflectLogged = true;
             Log.e(TAG, msg);
         }
+    }
+
+    // ------------------------------------------------ 热重载状态交接 (API 102)
+
+    /**
+     * 导出可跨模块类加载器传递的适配状态，并让本代退役（必须在主线程）。
+     *
+     * 返回一个 bundle：
+     *   "views" → HashMap&lt;View, Object[]&gt;，每行 12 槽：
+     *     0 比例(float) · 1 imagePost · 2 draweeFit · 3 aid
+     *     4/5 原始宽高 · 6/7 本模块写入宽高（ORIGINALS）
+     *     8/9 播放器真实比例与其 aid（REAL/REAL_AID）
+     *     10/11 DraweeView 原始 scaleType（ImageView + Fresco 层级）
+     *   "clean" → ArrayList&lt;Object&gt;，活跃清屏 ViewModel（宿主对象）
+     *
+     * 只含宿主 View/宿主对象与基本类型/String——setSavedInstanceState 禁止携带
+     * 旧模块类加载器创建的对象（FitState / WeakReference / 匿名布局监听等都不能过桥），
+     * 因此先把布局监听全部摘掉再导出，确保 View 图里没有模块类残留。
+     *
+     * 退役动作：摘掉全部容器布局监听 + 置 retired，旧代码从此不再写布局；
+     * 已写入的 LayoutParams / scaleType 保持现状（视觉不闪），由新代导入后继续记账。
+     */
+    static HashMap<String, Object> exportAndRetire() {
+        retired = true;
+        pending = null;
+        for (View v : new ArrayList<View>(WATCHES.keySet())) {
+            unwatch(v);
+        }
+
+        HashMap<View, Object[]> views = new HashMap<>();
+        for (View v : new ArrayList<View>(STATES.keySet())) {
+            FitState s = STATES.get(v);
+            if (s == null) {
+                continue;
+            }
+            if (!s.draweeFit && s.aspect <= 0.05f) {
+                continue;
+            }
+            Object[] row = new Object[12];
+            row[0] = s.aspect;
+            row[1] = s.imagePost;
+            row[2] = s.draweeFit;
+            row[3] = s.aid;
+            int[] rec = ORIGINALS.get(v);
+            row[4] = rec != null ? rec[0] : -1;
+            row[5] = rec != null ? rec[1] : -1;
+            row[6] = rec != null ? rec[2] : -1;
+            row[7] = rec != null ? rec[3] : -1;
+            row[8] = REAL.get(v);
+            row[9] = REAL_AID.get(v);
+            Object[] sc = SCALE_ORIGS.get(v);
+            row[10] = (sc != null) ? sc[0] : null;
+            row[11] = (sc != null) ? sc[1] : null;
+            views.put(v, row);
+        }
+
+        ArrayList<Object> activeVms = new ArrayList<>();
+        synchronized (CLEAN_VMS) {
+            for (Map.Entry<Object, Boolean> e : CLEAN_VMS.entrySet()) {
+                if (Boolean.TRUE.equals(e.getValue())) {
+                    activeVms.add(e.getKey());
+                }
+            }
+        }
+
+        HashMap<String, Object> bundle = new HashMap<>();
+        bundle.put("views", views);
+        bundle.put("clean", activeVms);
+        Log.i(TAG, "hot-reload export: " + views.size() + " view(s), "
+                + activeVms.size() + " clean vm(s)");
+        return bundle;
+    }
+
+    /**
+     * 跨线程导出：onHotReloading 不保证在主线程，post 到主线程同步等待（上限 1s）。
+     * 先立 retired 标志——即便主线程一时忙不过来，旧监听也立刻停写。
+     * 超时返回空 bundle：热重载照常进行，只是状态不交接。
+     */
+    static HashMap<String, Object> exportAndRetireSync() {
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            return exportAndRetire();
+        }
+        retired = true;
+        final HashMap<String, Object> holder = new HashMap<>();
+        final CountDownLatch latch = new CountDownLatch(1);
+        new android.os.Handler(android.os.Looper.getMainLooper()).post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    holder.putAll(exportAndRetire());
+                } finally {
+                    latch.countDown();
+                }
+            }
+        });
+        try {
+            if (!latch.await(1000, TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "hot-reload export timed out; state will not be handed over");
+                return new HashMap<>();
+            }
+        } catch (InterruptedException ignored) {
+            return new HashMap<>();
+        }
+        return holder;
+    }
+
+    /**
+     * 新代导入上一代交接的状态（自适应线程）：先恢复清屏状态（门控要用），
+     * 再恢复各 View 记账 + 重挂布局监听 + 幂等重算。
+     * params/player 属于模块类无法跨代，attach 补偿退化为「视图自带状态」路径；
+     * 面板门控在 Detail Activity 下由 isDetailActivity 判据兜底，行为不变。
+     */
+    static void importState(final HashMap<String, Object> bundle) {
+        if (bundle == null || bundle.isEmpty()) {
+            return;
+        }
+        Runnable job = new Runnable() {
+            @Override
+            public void run() {
+                importMain(bundle);
+            }
+        };
+        if (android.os.Looper.myLooper() == android.os.Looper.getMainLooper()) {
+            job.run();
+        } else {
+            new android.os.Handler(android.os.Looper.getMainLooper()).post(job);
+        }
+    }
+
+    @SuppressWarnings("unchecked")
+    private static void importMain(HashMap<String, Object> bundle) {
+        // 1) 清屏状态：必须先恢复，fit() 的图片门控依赖 cleanActive()
+        Object cleanObj = bundle.get("clean");
+        int vms = 0;
+        if (cleanObj instanceof java.util.Collection) {
+            synchronized (CLEAN_VMS) {
+                for (Object vm : (java.util.Collection<Object>) cleanObj) {
+                    if (vm != null) {
+                        CLEAN_VMS.put(vm, Boolean.TRUE);
+                        vms++;
+                    }
+                }
+            }
+        }
+        // 2) 各 View 的适配记账
+        Object viewsObj = bundle.get("views");
+        int n = 0;
+        if (viewsObj instanceof HashMap) {
+            for (Map.Entry<View, Object[]> e :
+                    ((HashMap<View, Object[]>) viewsObj).entrySet()) {
+                View v = e.getKey();
+                Object[] row = e.getValue();
+                if (v == null || row == null || row.length < 12) {
+                    continue;
+                }
+                float aspect = (Float) row[0];
+                boolean imagePost = (Boolean) row[1];
+                boolean draweeFit = (Boolean) row[2];
+                if (!draweeFit && aspect <= 0.05f) {
+                    continue;
+                }
+                FitState st = new FitState(aspect, imagePost, null, draweeFit,
+                        (String) row[3], null);
+                int origW = (Integer) row[4];
+                if (origW >= 0) {
+                    ORIGINALS.put(v, new int[]{origW, (Integer) row[5],
+                            (Integer) row[6], (Integer) row[7]});
+                }
+                if (row[8] instanceof Float) {
+                    REAL.put(v, (Float) row[8]);
+                    REAL_AID.put(v, (String) row[9]);
+                }
+                if (row[10] != null || row[11] != null) {
+                    SCALE_ORIGS.put(v, new Object[]{row[10], row[11]});
+                }
+                STATES.put(v, st);
+                applyMain(v, st); // 重挂监听 + 幂等适配（尺寸已合适则不重写）
+                n++;
+            }
+        }
+        Log.i(TAG, "hot-reload import: " + n + " view(s) taken over, "
+                + vms + " clean vm(s)");
     }
 }

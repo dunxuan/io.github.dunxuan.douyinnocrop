@@ -2,5 +2,15 @@
 # min/target 均为 102：需要支持 API 102 的 LSPosed 版本
 minApiVersion=102
 targetApiVersion=102
-# false = 作用域可由用户在 LSPosed 中调整（scope.list 为默认推荐项）
-staticScope=false
+
+# 静态作用域：模块只允许作用于 scope.list 列出的应用（抖音），
+# 用户在 LSPosed 中不能把本模块勾到列表之外，防止误注入其他应用。
+staticScope=true
+
+# 钩子异常模式（protective | passthrough），与代码里每个 hook 的
+# setExceptionMode(ExceptionMode.PROTECTIVE) 一致：钩子出错自动降级，不拖垮宿主。
+exceptionMode=protective
+
+# 热重载（API 102）：模块 APK 更新后，把新代码自动热重载进正在运行的抖音进程，
+# 免强停重启；真正是否重载还要看 NoCropModule#onHotReloading() 返回 true。
+autoHotReload=true
